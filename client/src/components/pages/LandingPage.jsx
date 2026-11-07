@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 
-const TYPEWRITER_WORDS = ['Build.', 'Showcase.', 'Discover.', 'Connect.', 'Scale.'];
+const TYPEWRITER_WORDS = ['Build', 'Showcase', 'Discover', 'Connect', 'Scale'];
 
 export default function LandingPage() {
     const [wordIndex, setWordIndex] = useState(0);
