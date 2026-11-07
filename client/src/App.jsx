@@ -3,6 +3,8 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Navbar from './components/layout/Navbar';
 import LandingPage from './components/pages/LandingPage';
 import DiscoverPage from './components/pages/DiscoverPage';
+import Feed from './components/pages/Feed';
+import Msg from './components/pages/Msg';
 
 export default function App() {
   const [user, setUser] = useState({ name: 'Varun', role: 'student' });
@@ -17,8 +19,8 @@ export default function App() {
           <Routes>
             <Route path="/" element={<LandingPage />} />
             <Route path="/discover" element={<DiscoverPage />} />
-            <Route path="/feed" element={<div className="p-8 font-semibold max-w-7xl mx-auto">Feed Page coming soon!</div>} />
-            <Route path="/messages" element={<div className="p-8 font-semibold max-w-7xl mx-auto">Messages coming soon!</div>} />
+            <Route path="/feed" element={<Feed/>} />
+            <Route path="/messages" element={<Msg/>} />
           </Routes>
         </main>
       </div>
