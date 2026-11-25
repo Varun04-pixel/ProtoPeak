@@ -1,119 +1,140 @@
 import express from 'express';
 import Post from '../models/Post.js';
-import { requireAuth } from '../middleware/authMiddleware.js';
+import { requireAuth } from './authRoutes.js';
 
 const router = express.Router();
 
-// GET /api/posts — Fetch feed posts (supports ?tag=Milestone)
-router.get('/', async (req, res) => {
+function formatRoleLabel(role) {
+  const clean = String(role || 'startup').trim().toLowerCase();
+  if (clean === 'investor') return 'Investor';
+  if (clean === 'company') return 'Company';
+  return 'Startup';
+}
+
+// GET /api/posts — Fetch all feed posts newest first
+router.get('/', async (_req, res) => {
   try {
-    const { tag } = req.query;
-    const filter = tag && tag !== 'All' ? { tag } : {};
-    const posts = await Post.find(filter).sort({ createdAt: -1 });
-    res.status(200).json(posts);
+    const posts = await Post.find().sort({ createdAt: -1 });
+    return res.status(200).json(posts);
   } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch posts', error: err.message });
+    return res.status(500).json({
+      message: 'Failed to fetch posts.',
+      error: err.message,
+    });
   }
 });
 
-// POST /api/posts — Create a new feed update
-// POST /api/posts — Only the authenticated startup can publish under its own fixed startupName
+// POST /api/posts — Only authenticated 'startup' accounts can publish feed posts
 router.post('/', requireAuth, async (req, res) => {
   try {
-    const fixedStartupName = (req.user.startupName || '').trim();
-    if (!fixedStartupName) {
+    const role = String(req.user?.role || 'startup').trim().toLowerCase();
+    if (role === 'investor' || role === 'company') {
       return res.status(403).json({
-        message: 'Only startup accounts with a registered startup name can create posts.',
+        message:
+          'Investor and company accounts can like and comment on posts, but cannot create feed posts.',
       });
     }
 
-    const { tag, content, teamLogo } = req.body;
+    const { startup, teamLogo, tag, content, verified } = req.body;
+
     if (!content || !content.trim()) {
-      return res.status(400).json({ message: 'Post content is required.' });
+      return res.status(400).json({
+        message: 'Post content is required.',
+      });
     }
 
-    // Find the startup owned by this user (or matching their fixed startupName)
-    const ownedStartup = await Startup.findOne({
-      $or: [
-        { createdBy: req.user._id },
-        { name: new RegExp(`^${fixedStartupName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
-      ],
-    });
+    const startupName = (
+      req.user.startupName ||
+      req.user.name ||
+      'Startup'
+    ).trim();
 
-    const post = await Post.create({
-      startup: ownedStartup ? ownedStartup._id : null,
-      teamName: fixedStartupName,
-      teamLogo: (teamLogo && teamLogo.trim()) || '🚀',
-      authorName: fixedStartupName,
-      authorRole: 'Startup Account',
-      tag: tag || 'Milestone',
+    const created = await Post.create({
+      startup: startup || null,
+      author: req.user._id,
+      teamName: startupName,
+      teamLogo: (teamLogo || '🚀').trim(),
+      authorName: startupName,
+      authorRole: 'Startup',
+      tag: (tag || 'Milestone').trim(),
       content: content.trim(),
-      verified: Boolean(ownedStartup?.verified),
+      likes: 0,
+      comments: 0,
+      commentsList: [],
+      verified: Boolean(verified),
     });
 
-    res.status(201).json(post);
+    return res.status(201).json(created);
   } catch (err) {
-    res.status(400).json({ message: 'Failed to create post', error: err.message });
+    return res.status(400).json({
+      message: 'Failed to create post.',
+      error: err.message,
+    });
   }
 });
 
-// POST /api/posts/:id/comments — Append a reply attributed to the logged-in startup account
-router.post('/:id/comments', requireAuth, async (req, res) => {
-  try {
-    const { text } = req.body;
-
-    if (!text || !text.trim()) {
-      return res.status(400).json({ message: 'Comment text is required' });
-    }
-
-    const post = await Post.findById(req.params.id);
-    if (!post) {
-      return res.status(404).json({ message: 'Post not found' });
-    }
-
-    const replyAuthor =
-      (req.user.startupName && req.user.startupName.trim()) ||
-      (req.user.name && req.user.name.trim()) ||
-      req.user.email;
-
-    post.commentsList.push({
-      authorName: replyAuthor,
-      authorRole: 'Startup Account',
-      text: text.trim(),
-    });
-    post.comments = post.commentsList.length;
-
-    await post.save();
-    res.status(201).json(post);
-  } catch (err) {
-    res.status(400).json({ message: 'Failed to add comment', error: err.message });
-  }
-});
-
-// PATCH /api/posts/:id/like — Increment or decrement likes
+// PATCH /api/posts/:id/like — Authenticated startup, investor, or company accounts can like/unlike
 router.patch('/:id/like', requireAuth, async (req, res) => {
   try {
-    const { liked } = req.body; // true to increment, false to decrement
-    const delta = liked ? 1 : -1;
-
-    const post = await Post.findByIdAndUpdate(
-      req.params.id,
-      { $inc: { likes: delta } },
-      { new: true }
-    );
-
+    const post = await Post.findById(req.params.id);
     if (!post) {
-      return res.status(404).json({ message: 'Post not found' });
+      return res.status(404).json({ message: 'Post not found.' });
     }
 
-    if (post.likes < 0) {
-      post.likes = 0;
-      await post.save();
-    }
+    const liked = Boolean(req.body?.liked);
+    post.likes = Math.max(0, (post.likes || 0) + (liked ? 1 : -1));
+    await post.save();
 
-    res.status(200).json(post);
+    return res.status(200).json(post);
   } catch (err) {
-    res.status(400).json({ message: 'Failed to update like', error: err.message });
+    return res.status(400).json({
+      message: 'Failed to update like.',
+      error: err.message,
+    });
+  }
+});
+
+// POST /api/posts/:id/comments — Authenticated startup, investor, or company accounts can comment
+router.post('/:id/comments', requireAuth, async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+    if (!post) {
+      return res.status(404).json({ message: 'Post not found.' });
+    }
+
+    const text = String(req.body?.text || '').trim();
+    if (!text) {
+      return res.status(400).json({ message: 'Comment text is required.' });
+    }
+
+    const role = String(req.user?.role || 'startup').trim().toLowerCase();
+    const actorName = (
+      role === 'startup'
+        ? req.user.startupName || req.user.name
+        : req.user.name || req.user.startupName
+    )?.trim() || req.user.email;
+
+    if (!Array.isArray(post.commentsList)) {
+      post.commentsList = [];
+    }
+
+    post.commentsList.push({
+      author: req.user._id,
+      authorName: actorName,
+      authorRole: formatRoleLabel(role),
+      text,
+      createdAt: new Date(),
+    });
+
+    post.comments = post.commentsList.length;
+    await post.save();
+
+    return res.status(201).json(post);
+  } catch (err) {
+    return res.status(400).json({
+      message: 'Failed to add comment.',
+      error: err.message,
+    });
   }
 });
 

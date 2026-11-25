@@ -1,65 +1,52 @@
 import express from 'express';
 import Startup from '../models/Startup.js';
-import { requireAuth } from '../middleware/authMiddleware.js';
+import { requireAuth } from './authRoutes.js';
 
 const router = express.Router();
 
-function escapeRegex(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// GET /api/startups — Fetch all startups (supports ?sector=&stage=&search=)
-router.get('/', async (req, res) => {
+// GET /api/startups — List all startups
+router.get('/', async (_req, res) => {
   try {
-    const { sector, stage, search } = req.query;
-    const filter = {};
-
-    if (sector && sector !== 'All') {
-      filter.sector = sector;
-    }
-    if (stage && stage !== 'All') {
-      filter.stage = stage;
-    }
-    if (search && search.trim()) {
-      const regex = new RegExp(escapeRegex(search.trim()), 'i');
-      filter.$or = [
-        { name: regex },
-        { tagline: regex },
-        { description: regex },
-        { location: regex },
-        { 'members.name': regex },
-      ];
-    }
-
-    const startups = await Startup.find(filter).sort({ createdAt: -1 });
-    res.status(200).json(startups);
+    const startups = await Startup.find().sort({ createdAt: -1 });
+    return res.status(200).json(startups);
   } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch startups', error: err.message });
+    return res.status(500).json({
+      message: 'Failed to fetch startups.',
+      error: err.message,
+    });
   }
 });
 
-// GET /api/startups/:id — Fetch a single startup profile
+// GET /api/startups/:id — Fetch single startup by ID
 router.get('/:id', async (req, res) => {
   try {
     const startup = await Startup.findById(req.params.id);
     if (!startup) {
-      return res.status(404).json({ message: 'Startup not found' });
+      return res.status(404).json({ message: 'Startup not found.' });
     }
-    res.status(200).json(startup);
+    return res.status(200).json(startup);
   } catch (err) {
-    res.status(400).json({ message: 'Invalid startup ID', error: err.message });
+    return res.status(400).json({
+      message: 'Invalid startup ID.',
+      error: err.message,
+    });
   }
 });
 
-// POST /api/startups — Publish a single startup for the authenticated startup account
+// POST /api/startups — Only authenticated 'startup' accounts can launch a startup (1 per account)
 router.post('/', requireAuth, async (req, res) => {
   try {
-    const userId = req.user._id;
+    const role = String(req.user?.role || 'startup').trim().toLowerCase();
+    if (role === 'investor' || role === 'company') {
+      return res.status(403).json({
+        message: 'Investor and company accounts cannot launch a startup.',
+      });
+    }
 
-    const existingStartup = await Startup.findOne({ createdBy: userId });
-    if (existingStartup) {
+    const existingOwned = await Startup.findOne({ createdBy: req.user._id });
+    if (existingOwned) {
       return res.status(409).json({
-        message: `This account has already published "${existingStartup.name}". Each startup account can publish only 1 startup.`,
+        message: 'Each startup account can launch only one startup.',
       });
     }
 
@@ -72,62 +59,85 @@ router.post('/', requireAuth, async (req, res) => {
       location,
       fundingNeed,
       members,
+      verified,
     } = req.body;
 
-    const finalName = (name && name.trim()) || (req.user.startupName && req.user.startupName.trim());
+    const resolvedName = (
+      name ||
+      req.user.startupName ||
+      req.user.name ||
+      ''
+    ).trim();
 
-    if (!finalName || !tagline || !description) {
+    if (!resolvedName || !tagline?.trim() || !description?.trim() || !sector?.trim()) {
       return res.status(400).json({
-        message: 'Startup name, tagline, and description are required.',
+        message: 'Startup name, tagline, description, and sector are required.',
       });
     }
 
-    const rawMembers = Array.isArray(members) && members.length > 0
-      ? members
-      : [{ name: finalName, roleTitle: 'Startup Lead', isLead: true }];
+    const normalizedMembers =
+      Array.isArray(members) && members.length > 0
+        ? members.map((m, idx) => ({
+            user: m.user || req.user._id,
+            name: (m.name || resolvedName).trim(),
+            roleTitle: (m.roleTitle || 'Founder').trim(),
+            isLead: idx === 0 ? true : Boolean(m.isLead),
+          }))
+        : [
+            {
+              user: req.user._id,
+              name: resolvedName,
+              roleTitle: 'Founder',
+              isLead: true,
+            },
+          ];
 
-    const normalizedMembers = rawMembers
-      .filter((m) => m && ((m.name && m.name.trim()) || finalName))
-      .map((m, index) => ({
-        user: index === 0 ? userId : m.user || null,
-        name: (m.name && m.name.trim()) || finalName,
-        roleTitle: (m.roleTitle && m.roleTitle.trim()) || (index === 0 ? 'Startup Lead' : 'Builder'),
-        isLead: Boolean(m.isLead),
-      }));
-
-    if (normalizedMembers.length === 0) {
-      return res.status(400).json({
-        message: 'At least one team member is required.',
-      });
-    }
-
-    if (!normalizedMembers.some((m) => m.isLead)) {
-      normalizedMembers[0].isLead = true;
-    }
-
-    const startup = await Startup.create({
-      createdBy: userId,
-      name: finalName,
+    const created = await Startup.create({
+      name: resolvedName,
       tagline: tagline.trim(),
       description: description.trim(),
-      sector: sector || 'Cybersecurity',
-      stage: stage || 'Prototype',
-      location:
-        (location && location.trim()) ||
-        (req.user.institution && req.user.institution.trim()) ||
-        'Bengaluru, India',
-      fundingNeed: (fundingNeed && fundingNeed.trim()) || '< $10k',
+      sector: sector.trim(),
+      stage: (stage || 'Prototype').trim(),
+      location: (location || req.user.institution || 'Bengaluru, India').trim(),
+      fundingNeed: (fundingNeed || 'Bootstrapped').trim(),
       members: normalizedMembers,
+      verified: Boolean(verified),
+      createdBy: req.user._id,
     });
 
-    res.status(201).json(startup);
+    return res.status(201).json(created);
   } catch (err) {
     if (err.code === 11000) {
       return res.status(409).json({
-        message: 'Each startup account can publish only 1 startup.',
+        message: 'A startup with this name already exists.',
       });
     }
-    res.status(400).json({ message: 'Failed to create startup', error: err.message });
+    return res.status(400).json({
+      message: 'Failed to launch startup.',
+      error: err.message,
+    });
+  }
+});
+
+// DELETE /api/startups/:id — Allow owner startup account to remove its own startup
+router.delete('/:id', requireAuth, async (req, res) => {
+  try {
+    const startup = await Startup.findById(req.params.id);
+    if (!startup) {
+      return res.status(404).json({ message: 'Startup not found.' });
+    }
+
+    if (String(startup.createdBy) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Not authorized to delete this startup.' });
+    }
+
+    await startup.deleteOne();
+    return res.status(200).json({ message: 'Startup deleted.' });
+  } catch (err) {
+    return res.status(400).json({
+      message: 'Failed to delete startup.',
+      error: err.message,
+    });
   }
 });
 

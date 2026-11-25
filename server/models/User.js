@@ -2,11 +2,22 @@ import mongoose from 'mongoose';
 
 const userSchema = new mongoose.Schema(
   {
+    name: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     startupName: {
       type: String,
-      required: [true, 'Startup name is required'],
       unique: true,
+      sparse: true,
       trim: true,
+      required: [
+        function () {
+          return this.role === 'startup';
+        },
+        'Startup name is required for startup accounts',
+      ],
     },
     email: {
       type: String,
@@ -22,8 +33,13 @@ const userSchema = new mongoose.Schema(
     },
     institution: {
       type: String,
-      required: [true, 'Institution is required'],
+      required: [true, 'Institution or organization is required'],
       trim: true,
+    },
+    organization: {
+      type: String,
+      trim: true,
+      default: '',
     },
     role: {
       type: String,

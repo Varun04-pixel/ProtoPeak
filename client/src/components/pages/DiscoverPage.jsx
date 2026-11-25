@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { INITIAL_STARTUPS } from '../../data/startupsData';
 import TeamMembersPreview from '../startup/TeamMembersPreview';
 import CreateStartupModal from '../startup/CreateStartupModal';
@@ -20,10 +20,31 @@ export default function DiscoverPage({
   const [selectedStage, setSelectedStage] = useState('All');
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedStartup, setSelectedStartup] = useState(null);
+  const [roleToast, setRoleToast] = useState('');
+  const toastTimerRef = useRef(null);
 
-  // Check whether the logged-in user already owns a startup
+  const normalizedRole = String(currentUser?.role || 'startup').trim().toLowerCase();
+  const isInvestorOrCompany =
+    Boolean(currentUser) &&
+    (normalizedRole === 'investor' || normalizedRole === 'company');
+
+  const showRoleToast = (message) => {
+    setRoleToast(message);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setRoleToast('');
+    }, 5000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  // Check whether the logged-in startup user already owns a startup
   const userStartup = useMemo(() => {
-    if (!currentUser) return null;
+    if (!currentUser || isInvestorOrCompany) return null;
     const uid = String(currentUser.id || currentUser._id || '');
     return (
       startups.find(
@@ -32,7 +53,7 @@ export default function DiscoverPage({
           s.members?.some((m) => m.user && String(m.user) === uid)
       ) || null
     );
-  }, [startups, currentUser]);
+  }, [startups, currentUser, isInvestorOrCompany]);
 
   const filteredStartups = useMemo(() => {
     return startups.filter((startup) => {
@@ -58,12 +79,18 @@ export default function DiscoverPage({
       navigate('/login');
       return;
     }
+    if (isInvestorOrCompany) {
+      showRoleToast(
+        'Investor and company accounts can like and comment on posts, but cannot launch a startup.'
+      );
+      return;
+    }
     if (userStartup) return;
     setIsCreateOpen(true);
   };
 
   const handleAddStartup = async (newStartup) => {
-    if (!currentUser || userStartup) return;
+    if (!currentUser || isInvestorOrCompany || userStartup) return;
     if (typeof onCreateStartup === 'function') {
       await onCreateStartup(newStartup);
     }
@@ -79,8 +106,39 @@ export default function DiscoverPage({
     }
   };
 
+  const roleBadgeText =
+    normalizedRole === 'investor'
+      ? 'Investor Account • Like & Comment Only'
+      : 'Company Account • Like & Comment Only';
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white pt-24 pb-16 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white pt-24 pb-16 px-4 sm:px-6 lg:px-8 relative">
+      {/* 5-Second Role Restriction Toast */}
+      {roleToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md bg-slate-900/95 backdrop-blur-xl border border-purple-400/40 text-white px-4 py-3 rounded-2xl shadow-2xl shadow-indigo-950/80 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs sm:text-sm font-medium text-slate-100">
+            <span className="text-base shrink-0">🔒</span>
+            <span>{roleToast}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/feed"
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
+            >
+              Feed
+            </Link>
+            <button
+              type="button"
+              onClick={() => setRoleToast('')}
+              className="text-slate-400 hover:text-white text-xs px-1.5 py-1"
+              aria-label="Dismiss notification"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-7xl mx-auto space-y-8">
         {/* Header + Launch CTA */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -93,7 +151,15 @@ export default function DiscoverPage({
             </p>
           </div>
 
-          {userStartup ? (
+          {isInvestorOrCompany ? (
+            <button
+              type="button"
+              onClick={handleOpenCreateModal}
+              className="self-start sm:self-auto px-4 py-2.5 bg-purple-500/15 border border-purple-400/30 text-purple-200 rounded-xl text-xs font-semibold flex items-center gap-2 shrink-0"
+            >
+              <span>{roleBadgeText}</span>
+            </button>
+          ) : userStartup ? (
             <div className="self-start sm:self-auto px-4 py-2.5 bg-emerald-500/15 border border-emerald-400/30 text-emerald-200 rounded-xl text-xs font-semibold flex items-center gap-2 shrink-0">
               <span>✓</span>
               <span>Launched: {userStartup.name} (1/1)</span>
@@ -254,7 +320,7 @@ export default function DiscoverPage({
         )}
       </div>
 
-      {/* Full Startup Details Modal (Scrollable with Full Description & All Members) */}
+      {/* Full Startup Details Modal */}
       {selectedStartup && (
         <div
           onClick={() => setSelectedStartup(null)}
@@ -264,7 +330,6 @@ export default function DiscoverPage({
             onClick={(e) => e.stopPropagation()}
             className="bg-slate-900 border border-white/15 rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 sm:p-8 shadow-2xl space-y-6 my-auto"
           >
-            {/* Header */}
             <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-4">
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
@@ -299,7 +364,6 @@ export default function DiscoverPage({
               </button>
             </div>
 
-            {/* Full Description */}
             <div className="space-y-2">
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                 Full Description
@@ -309,7 +373,6 @@ export default function DiscoverPage({
               </p>
             </div>
 
-            {/* Key Metrics */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="bg-slate-950/60 border border-white/10 rounded-xl p-3.5">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
@@ -339,7 +402,6 @@ export default function DiscoverPage({
               </div>
             </div>
 
-            {/* Complete Team Members List */}
             <div className="space-y-3">
               <h3 className="text-xs font-bold uppercase tracking-wider text-purple-300">
                 👥 Team Members ({selectedStartup.members?.length || 0})
@@ -376,43 +438,6 @@ export default function DiscoverPage({
               )}
             </div>
 
-            {/* Optional Links if present on Startup */}
-            {(selectedStartup.website || selectedStartup.demoUrl || selectedStartup.repoUrl) && (
-              <div className="flex flex-wrap gap-2.5">
-                {selectedStartup.website && (
-                  <a
-                    href={selectedStartup.website}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-xs font-semibold text-indigo-200 rounded-xl border border-white/10 transition"
-                  >
-                    Website ↗
-                  </a>
-                )}
-                {selectedStartup.demoUrl && (
-                  <a
-                    href={selectedStartup.demoUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-xs font-semibold text-indigo-200 rounded-xl border border-white/10 transition"
-                  >
-                    Live Demo ↗
-                  </a>
-                )}
-                {selectedStartup.repoUrl && (
-                  <a
-                    href={selectedStartup.repoUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-xs font-semibold text-indigo-200 rounded-xl border border-white/10 transition"
-                  >
-                    Repository ↗
-                  </a>
-                )}
-              </div>
-            )}
-
-            {/* Footer Actions */}
             <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/10">
               <button
                 type="button"
@@ -433,8 +458,8 @@ export default function DiscoverPage({
         </div>
       )}
 
-      {/* Create Startup Modal (Authenticated Users Without a Startup Only) */}
-      {isCreateOpen && currentUser && !userStartup && (
+      {/* Create Startup Modal (Only for Authenticated Startup Accounts Without a Startup) */}
+      {isCreateOpen && currentUser && !isInvestorOrCompany && !userStartup && (
         <CreateStartupModal
           isOpen={isCreateOpen}
           currentUser={currentUser}

@@ -70,7 +70,7 @@ export default function App() {
           });
         }
       })
-      .catch(() => { });
+      .catch(() => {});
 
     return () => {
       active = false;
@@ -79,16 +79,18 @@ export default function App() {
 
   const handleCreateStartup = async (newStartup) => {
     if (!currentUser) return;
-    try {
-      const saved = await apiRequest('/startups', {
-        method: 'POST',
-        body: JSON.stringify(newStartup),
-      });
-      setStartups((prev) => [normalizeStartup(saved), ...prev]);
-    } catch (err) {
-      console.warn('Saved locally (API error):', err.message);
-      setStartups((prev) => [normalizeStartup(newStartup), ...prev]);
+    const role = String(currentUser.role || 'startup').trim().toLowerCase();
+    if (role === 'investor' || role === 'company') {
+      throw new Error(
+        'Investor and company accounts cannot launch a startup.'
+      );
     }
+
+    const saved = await apiRequest('/startups', {
+      method: 'POST',
+      body: JSON.stringify(newStartup),
+    });
+    setStartups((prev) => [normalizeStartup(saved), ...prev]);
   };
 
   const handleAuthSuccess = (authPayload) => {
@@ -97,9 +99,13 @@ export default function App() {
       localStorage.setItem('protopeak_token', authPayload.token);
     }
     if (userObj) {
+      const role = String(userObj.role || 'startup').trim().toLowerCase();
+      const cleanName = (userObj.name || userObj.startupName || '').trim();
       const normalizedUser = {
         ...userObj,
-        startupName: (userObj.startupName || userObj.name || '').trim(),
+        role,
+        name: cleanName,
+        startupName: role === 'startup' ? (userObj.startupName || cleanName).trim() : '',
       };
       localStorage.setItem('protopeak_user', JSON.stringify(normalizedUser));
       setCurrentUser(normalizedUser);

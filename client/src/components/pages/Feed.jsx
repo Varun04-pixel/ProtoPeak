@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { INITIAL_STARTUPS } from '../../data/startupsData';
 import { apiRequest } from '../../api/client';
@@ -12,14 +12,22 @@ const TEAM_LOGOS = {
 
 const FILTER_TAGS = ['All', 'Milestone', 'Hiring', 'Prototype Update', 'Update'];
 
+const TAG_STYLES = {
+  Milestone: 'bg-indigo-500/20 text-indigo-300 border-indigo-400/30',
+  Hiring: 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30',
+  'Prototype Update': 'bg-purple-500/20 text-purple-300 border-purple-400/30',
+  Update: 'bg-sky-500/20 text-sky-300 border-sky-400/30',
+};
+
 const INITIAL_POSTS = [
   {
     id: 1,
     teamName: 'QueryGuard',
     teamLogo: '🛡️',
     authorName: 'QueryGuard',
-    authorRole: 'Startup Account',
+    authorRole: 'Startup',
     timeAgo: '2 hours ago',
+    createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
     tag: 'Milestone',
     content:
       'Excited to announce that we completed our static analysis engine integration! QueryGuard can now parse and flag SQL injection vectors in under 120ms during automated local testing.',
@@ -29,7 +37,7 @@ const INITIAL_POSTS = [
       {
         _id: 'c1',
         authorName: 'EcoTrace',
-        authorRole: 'Startup Account',
+        authorRole: 'Startup',
         text: 'Sub-120ms AST parsing is super clean—are you supporting MySQL prepared statement rewrites too?',
         createdAt: new Date(Date.now() - 3600 * 1000).toISOString(),
       },
@@ -42,8 +50,9 @@ const INITIAL_POSTS = [
     teamName: 'EcoTrace',
     teamLogo: '🌱',
     authorName: 'EcoTrace',
-    authorRole: 'Startup Account',
+    authorRole: 'Startup',
     timeAgo: '5 hours ago',
+    createdAt: new Date(Date.now() - 5 * 3600 * 1000).toISOString(),
     tag: 'Hiring',
     content:
       'Looking for a teammate experienced with MQTT brokers and time-series dashboards to help scale our campus sensor fleet.',
@@ -58,8 +67,9 @@ const INITIAL_POSTS = [
     teamName: 'MediPulse AI',
     teamLogo: '🩺',
     authorName: 'MediPulse AI',
-    authorRole: 'Startup Account',
+    authorRole: 'Startup',
     timeAgo: '1 day ago',
+    createdAt: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
     tag: 'Prototype Update',
     content:
       'Refined our offline bilingual intake flow for rural clinic workers. Check out our profile on Discover to see our current pilot goals.',
@@ -92,6 +102,13 @@ function normalizePost(post) {
     comments: list.length,
     isLiked: Boolean(post.isLiked),
   };
+}
+
+function getRoleBadgeLabel(role) {
+  const clean = String(role || '').trim().toLowerCase();
+  if (clean === 'investor') return 'Investor';
+  if (clean === 'company') return 'Company';
+  return 'Startup';
 }
 
 export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = null }) {
@@ -143,10 +160,15 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
   }, []);
 
   const activeUser = currentUser || resolvedUser;
+  const userRole = String(activeUser?.role || 'startup').trim().toLowerCase();
+  const isInvestorOrCompany =
+    Boolean(activeUser) && (userRole === 'investor' || userRole === 'company');
+  const canCreatePost = Boolean(activeUser) && !isInvestorOrCompany;
+
   const userStartupLower = (activeUser?.startupName || '').trim().toLowerCase();
 
   const matchedOwnedStartup = safeStartups.find((s) => {
-    if (!s || !activeUser) return false;
+    if (!s || !activeUser || isInvestorOrCompany) return false;
     const ownerId = s.createdBy?._id || s.createdBy;
     const userId = activeUser.id || activeUser._id;
     const matchesOwner = ownerId && userId && String(ownerId) === String(userId);
@@ -155,23 +177,34 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
     return matchesOwner || matchesName;
   });
 
-  const activeStartupName = (
-    activeUser?.startupName ||
-    matchedOwnedStartup?.name ||
-    matchedOwnedStartup?.startupName ||
-    activeUser?.name ||
-    ''
-  ).trim();
+  const actorDisplayName =
+    (userRole === 'startup'
+      ? activeUser?.startupName ||
+        matchedOwnedStartup?.name ||
+        matchedOwnedStartup?.startupName ||
+        activeUser?.name
+      : activeUser?.name || activeUser?.startupName
+    )?.trim() || '';
+
+  const actorRoleLabel = getRoleBadgeLabel(userRole);
 
   const [posts, setPosts] = useState(INITIAL_POSTS);
+  const [loadingPosts, setLoadingPosts] = useState(true);
+
+  // Search, Startup Filter, Tag Filter & Sort States
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedStartupFilter, setSelectedStartupFilter] = useState('All');
   const [selectedTag, setSelectedTag] = useState('All');
+  const [sortBy, setSortBy] = useState('latest'); // 'latest' | 'popular'
+
+  // Create Post Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newPostContent, setNewPostContent] = useState('');
   const [postTag, setPostTag] = useState('Milestone');
   const [submitting, setSubmitting] = useState(false);
   const [postError, setPostError] = useState('');
 
-  // 5-second auth popup toast for unauthenticated actions
+  // 5-second toast popup for unauthenticated or restricted actions
   const [authToastMessage, setAuthToastMessage] = useState('');
   const toastTimerRef = useRef(null);
 
@@ -183,9 +216,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
 
   const showAuthPopup = (message) => {
     setAuthToastMessage(message);
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-    }
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => {
       setAuthToastMessage('');
     }, 5000);
@@ -208,6 +239,8 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
         }
       } catch (err) {
         console.warn('Using local fallback posts:', err.message);
+      } finally {
+        if (active) setLoadingPosts(false);
       }
     }
 
@@ -217,15 +250,80 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
     };
   }, []);
 
-  const visiblePosts =
-    selectedTag === 'All'
-      ? posts
-      : posts.filter((post) => post.tag === selectedTag);
+  // Unique startup names present in the feed for quick one-click filtering
+  const availableStartups = useMemo(() => {
+    const seen = new Map();
+    posts.forEach((p) => {
+      const name = (p.teamName || '').trim();
+      if (name && !seen.has(name.toLowerCase())) {
+        seen.set(name.toLowerCase(), {
+          name,
+          logo: p.teamLogo || TEAM_LOGOS[name] || '🚀',
+        });
+      }
+    });
+    return Array.from(seen.values());
+  }, [posts]);
 
-  const handleOpenPostModal = () => {
+  const visiblePosts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+
+    const filtered = posts.filter((post) => {
+      const matchesTag = selectedTag === 'All' || post.tag === selectedTag;
+      const matchesStartup =
+        selectedStartupFilter === 'All' ||
+        (post.teamName || '').trim().toLowerCase() ===
+          selectedStartupFilter.trim().toLowerCase();
+
+      const matchesSearch =
+        !q ||
+        (post.teamName || '').toLowerCase().includes(q) ||
+        (post.content || '').toLowerCase().includes(q) ||
+        (post.tag || '').toLowerCase().includes(q) ||
+        (post.commentsList || []).some(
+          (c) =>
+            (c.authorName || '').toLowerCase().includes(q) ||
+            (c.text || '').toLowerCase().includes(q)
+        );
+
+      return matchesTag && matchesStartup && matchesSearch;
+    });
+
+    if (sortBy === 'popular') {
+      return [...filtered].sort(
+        (a, b) => (b.likes || 0) + (b.comments || 0) - ((a.likes || 0) + (a.comments || 0))
+      );
+    }
+
+    return filtered;
+  }, [posts, searchQuery, selectedStartupFilter, selectedTag, sortBy]);
+
+  const hasActiveFilters =
+    Boolean(searchQuery.trim()) ||
+    selectedStartupFilter !== 'All' ||
+    selectedTag !== 'All' ||
+    sortBy !== 'latest';
+
+  const handleResetFilters = () => {
+    setSearchQuery('');
+    setSelectedStartupFilter('All');
+    setSelectedTag('All');
+    setSortBy('latest');
+  };
+
+  const handleOpenPostModal = (presetTag) => {
     if (!activeUser) {
       navigate('/login');
       return;
+    }
+    if (!canCreatePost) {
+      showAuthPopup(
+        'Investor and company accounts can like and comment on posts, but cannot create feed posts.'
+      );
+      return;
+    }
+    if (typeof presetTag === 'string') {
+      setPostTag(presetTag);
     }
     setPostError('');
     setIsModalOpen(true);
@@ -233,7 +331,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
 
   const handleLike = async (targetPost) => {
     if (!activeUser) {
-      showAuthPopup('Only authenticated startup accounts can like posts.');
+      showAuthPopup('Only authenticated accounts can like posts.');
       return;
     }
 
@@ -273,17 +371,17 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
   const handleAddComment = async (e, targetPost) => {
     e.preventDefault();
     if (!activeUser) {
-      showAuthPopup('Only authenticated startup accounts can reply to posts.');
+      showAuthPopup('Only authenticated accounts can comment on posts.');
       return;
     }
 
     const draft = (commentDrafts[targetPost.id] || '').trim();
     if (!draft || commentSubmittingId === targetPost.id) return;
 
-    const replyAuthor = activeStartupName || 'Startup Account';
+    const replyAuthor = actorDisplayName || activeUser.email || 'Member';
     const payload = {
       authorName: replyAuthor,
-      authorRole: 'Startup Account',
+      authorRole: actorRoleLabel,
       text: draft,
     };
 
@@ -339,6 +437,12 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
       navigate('/login');
       return;
     }
+    if (!canCreatePost) {
+      setPostError(
+        'Investor and company accounts can like and comment on posts, but cannot create feed posts.'
+      );
+      return;
+    }
 
     if (!newPostContent.trim()) {
       setPostError('Please write an update before posting.');
@@ -350,7 +454,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
     setPostError('');
     setSubmitting(true);
 
-    const startupLabel = activeStartupName || 'Startup Account';
+    const startupLabel = actorDisplayName || 'Startup';
     const payload = {
       startup:
         matchedOwnedStartup &&
@@ -364,7 +468,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
         TEAM_LOGOS[startupLabel.toLowerCase()] ||
         '🚀',
       authorName: startupLabel,
-      authorRole: 'Startup Account',
+      authorRole: 'Startup',
       tag: postTag,
       content: newPostContent.trim(),
       verified: Boolean(matchedOwnedStartup?.verified),
@@ -376,7 +480,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
         body: JSON.stringify(payload),
       });
       setPosts((prev) => [normalizePost({ ...saved, isLiked: false }), ...prev]);
-      setSelectedTag('All');
+      handleResetFilters();
       setNewPostContent('');
       setIsModalOpen(false);
     } catch (err) {
@@ -386,15 +490,14 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
     }
   };
 
-  const displayStartupName = activeStartupName || 'Startup Account';
   const displayLogo =
-    TEAM_LOGOS[displayStartupName] ||
-    TEAM_LOGOS[displayStartupName.toLowerCase()] ||
+    TEAM_LOGOS[actorDisplayName] ||
+    TEAM_LOGOS[actorDisplayName.toLowerCase()] ||
     '🚀';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white pt-24 pb-16 px-4 sm:px-6 lg:px-8 relative">
-      {/* 5-Second Auth Toast Popup */}
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white pt-24 pb-20 px-4 sm:px-6 lg:px-8 relative">
+      {/* 5-Second Auth / Permission Toast Popup */}
       {authToastMessage && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md bg-slate-900/95 backdrop-blur-xl border border-indigo-400/40 text-white px-4 py-3 rounded-2xl shadow-2xl shadow-indigo-950/80 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 text-xs sm:text-sm font-medium text-slate-100">
@@ -402,12 +505,14 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
             <span>{authToastMessage}</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <Link
-              to="/login"
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
-            >
-              Log In
-            </Link>
+            {!activeUser && (
+              <Link
+                to="/login"
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
+              >
+                Log In
+              </Link>
+            )}
             <button
               type="button"
               onClick={() => setAuthToastMessage('')}
@@ -421,211 +526,458 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
       )}
 
       <div className="max-w-3xl mx-auto space-y-6">
-        <div className="space-y-2">
-          <h1 className="text-3xl sm:text-4xl font-black tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
-            Community Feed
-          </h1>
-          <p className="text-slate-400 text-sm sm:text-base">
-            Milestones, hiring calls, and raw prototype updates shared by startup accounts.
-          </p>
+        {/* Page Header */}
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="inline-flex items-center gap-2 bg-indigo-500/15 border border-indigo-400/25 px-3 py-1 rounded-full text-[11px] font-semibold text-indigo-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>Live Builder Updates</span>
+            </div>
+            <h1 className="text-3xl sm:text-4xl font-black tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
+              Community Feed
+            </h1>
+            <p className="text-slate-400 text-sm sm:text-base">
+              Track startup milestones, hiring calls, and prototype logs in real time.
+            </p>
+          </div>
+
+          <Link
+            to="/discover"
+            className="self-start sm:self-auto px-4 py-2 bg-white/5 hover:bg-white/10 text-indigo-200 border border-white/10 rounded-xl text-xs font-semibold transition shrink-0"
+          >
+            Browse Startups →
+          </Link>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {FILTER_TAGS.map((tag) => {
-            const active = selectedTag === tag;
-            return (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => setSelectedTag(tag)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition ${
-                  active
-                    ? 'bg-indigo-600 text-white border-indigo-400/50 shadow-lg shadow-indigo-950/60'
-                    : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                {tag}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="space-y-6">
-          {visiblePosts.map((post) => {
-            const isDrawerOpen = Boolean(openCommentsMap[post.id]);
-            const replies = post.commentsList || [];
-            const commentErr = commentErrorMap[post.id];
-
-            return (
-              <article
-                key={post.id}
-                className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 shadow-xl space-y-4 transition hover:border-white/20"
-              >
-                <div className="flex justify-between items-start gap-3">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-xl bg-slate-800 border border-white/10 flex items-center justify-center text-xl shrink-0">
-                      {post.teamLogo}
-                    </div>
-                    <div>
-                      <div className="flex items-center flex-wrap gap-2">
-                        <span className="font-bold text-sm text-white">{post.teamName}</span>
-                        {post.verified && (
-                          <span className="text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2 py-0.5 rounded-full">
-                            Verified
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-400 mt-0.5">{post.timeAgo}</p>
-                    </div>
-                  </div>
-
-                  <span className="text-xs font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-400/30 px-3 py-1 rounded-full shrink-0">
-                    {post.tag}
-                  </span>
-                </div>
-
-                <p className="text-sm text-slate-200 leading-relaxed">{post.content}</p>
-
-                <div className="flex items-center space-x-6 pt-3 border-t border-white/10">
-                  <button
-                    type="button"
-                    onClick={() => handleLike(post)}
-                    className={`flex items-center space-x-2 text-xs font-medium transition ${
-                      post.isLiked ? 'text-rose-400 font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <span className="text-base">{post.isLiked ? '❤️' : '🤍'}</span>
-                    <span>{post.likes} Likes</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => toggleCommentsDrawer(post.id)}
-                    className={`flex items-center space-x-2 text-xs font-medium transition ${
-                      isDrawerOpen ? 'text-indigo-300 font-bold' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <span className="text-base">💬</span>
-                    <span>{post.comments} Comments</span>
-                  </button>
-                </div>
-
-                {/* Expandable Comments Drawer */}
-                {isDrawerOpen && (
-                  <div className="pt-3 border-t border-white/10 space-y-3">
-                    {replies.length > 0 ? (
-                      <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-                        {replies.map((reply, idx) => (
-                          <div
-                            key={reply._id || idx}
-                            className="bg-slate-950/60 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs space-y-1"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="font-semibold text-white">
-                                {reply.authorName || 'Startup Account'}
-                              </span>
-                              <span className="text-[11px] text-slate-500">
-                                {formatTimeAgo(reply.createdAt)}
-                              </span>
-                            </div>
-                            <p className="text-slate-300 leading-relaxed">{reply.text}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-slate-500">
-                        No replies yet. Start the discussion below.
-                      </p>
-                    )}
-
-                    {commentErr && (
-                      <p className="text-xs text-rose-300 bg-rose-500/15 border border-rose-500/30 rounded-xl px-3 py-2">
-                        {commentErr}
-                      </p>
-                    )}
-
-                    {activeUser ? (
-                      <form
-                        onSubmit={(e) => handleAddComment(e, post)}
-                        className="flex flex-col sm:flex-row gap-2"
-                      >
-                        <span className="sm:w-44 bg-slate-950/60 border border-white/10 rounded-xl px-3 py-2 text-xs text-indigo-200 font-semibold flex items-center truncate">
-                          {displayStartupName}
-                        </span>
-                        <input
-                          type="text"
-                          placeholder="Write a reply or question..."
-                          value={commentDrafts[post.id] || ''}
-                          onChange={(e) =>
-                            setCommentDrafts((prev) => ({
-                              ...prev,
-                              [post.id]: e.target.value,
-                            }))
-                          }
-                          className="flex-1 bg-slate-950/70 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-                        />
-                        <button
-                          type="submit"
-                          disabled={commentSubmittingId === post.id}
-                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold rounded-xl text-xs transition border border-indigo-400/30"
-                        >
-                          {commentSubmittingId === post.id ? 'Sending...' : 'Reply'}
-                        </button>
-                      </form>
-                    ) : (
-                      <div className="flex items-center justify-between gap-3 bg-slate-950/60 border border-white/10 rounded-xl px-4 py-2.5 text-xs">
-                        <span className="text-slate-400">
-                          Only logged-in startup accounts can post replies.
-                        </span>
-                        <Link
-                          to="/login"
-                          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition border border-indigo-400/30 shrink-0"
-                        >
-                          Log In
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </article>
-            );
-          })}
-
-          {visiblePosts.length === 0 && (
-            <div className="text-center py-12 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl space-y-3">
-              <p className="text-slate-400 text-sm">
-                No posts under <span className="text-indigo-300 font-semibold">{selectedTag}</span> yet.
-              </p>
+        {/* Role-Aware Composer Bar */}
+        {canCreatePost ? (
+          <div className="bg-white/5 backdrop-blur-md border border-white/10 hover:border-indigo-400/30 rounded-2xl p-4 shadow-xl space-y-3 transition">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600/25 border border-indigo-400/30 flex items-center justify-center text-lg shrink-0">
+                {displayLogo}
+              </div>
               <button
                 type="button"
-                onClick={() => setSelectedTag('All')}
-                className="px-4 py-2 bg-white/10 hover:bg-white/15 text-xs font-semibold rounded-xl border border-white/10 transition"
+                onClick={() => handleOpenPostModal('Milestone')}
+                className="flex-1 text-left bg-slate-950/70 hover:bg-slate-950 border border-white/10 rounded-xl px-4 py-2.5 text-xs sm:text-sm text-slate-400 hover:text-slate-200 transition"
               >
-                Show all posts
+                Share a milestone or prototype update as{' '}
+                <span className="text-indigo-300 font-semibold">{actorDisplayName}</span>...
               </button>
             </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-white/10">
+              <div className="flex flex-wrap gap-1.5">
+                {['Milestone', 'Prototype Update', 'Hiring'].map((quickTag) => (
+                  <button
+                    key={quickTag}
+                    type="button"
+                    onClick={() => handleOpenPostModal(quickTag)}
+                    className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-indigo-500/20 text-[11px] font-medium text-slate-300 hover:text-indigo-200 border border-white/10 transition"
+                  >
+                    + {quickTag}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => handleOpenPostModal('Milestone')}
+                className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition border border-indigo-400/30"
+              >
+                Post Update
+              </button>
+            </div>
+          </div>
+        ) : isInvestorOrCompany ? (
+          <div className="bg-purple-500/10 border border-purple-400/25 rounded-2xl px-4 py-3 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 text-purple-200">
+              <span className="text-base">💬</span>
+              <span>
+                Signed in as <strong className="text-white">{actorDisplayName}</strong> ({actorRoleLabel}) — like and comment on startup updates below.
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Search, Startup Selector, Tag Filters & Sort Bar */}
+        <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-4 sm:p-5 space-y-4 shadow-xl">
+          {/* Search Input + Sort Dropdown */}
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="relative flex-1">
+              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm pointer-events-none">
+                🔍
+              </span>
+              <input
+                type="text"
+                placeholder="Search by startup name, keyword, or update..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-950/75 border border-white/10 rounded-xl pl-10 pr-9 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs px-1"
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Quick Filter by Startup */}
+          {/* {availableStartups.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                Filter by Startup
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSelectedStartupFilter('All')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold border transition ${
+                    selectedStartupFilter === 'All'
+                      ? 'bg-indigo-600/30 text-indigo-200 border-indigo-400/50'
+                      : 'bg-slate-950/50 text-slate-400 border-white/10 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  All Startups
+                </button>
+                {availableStartups.map((st) => {
+                  const isActive =
+                    selectedStartupFilter.toLowerCase() === st.name.toLowerCase();
+                  return (
+                    <button
+                      key={st.name}
+                      type="button"
+                      onClick={() =>
+                        setSelectedStartupFilter(isActive ? 'All' : st.name)
+                      }
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold border transition flex items-center gap-1.5 ${
+                        isActive
+                          ? 'bg-indigo-600 text-white border-indigo-400/50 shadow-md shadow-indigo-950/60'
+                          : 'bg-slate-950/50 text-slate-300 border-white/10 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      <span>{st.logo}</span>
+                      <span>{st.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )} */}
+
+          {/* Filter by Category Tag */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10">
+            <div className="flex flex-wrap gap-2">
+              {FILTER_TAGS.map((tag) => {
+                const active = selectedTag === tag;
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => setSelectedTag(tag)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+                      active
+                        ? 'bg-indigo-600 text-white border-indigo-400/50 shadow-lg shadow-indigo-950/60'
+                        : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+            </div>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="text-xs font-semibold text-indigo-300 hover:text-white transition"
+              >
+                Reset all
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Active Results Counter */}
+        <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+          <span>
+            Showing <strong className="text-white">{visiblePosts.length}</strong>{' '}
+            {visiblePosts.length === 1 ? 'update' : 'updates'}
+            {selectedStartupFilter !== 'All' && (
+              <>
+                {' '}
+                from <strong className="text-indigo-300">{selectedStartupFilter}</strong>
+              </>
+            )}
+          </span>
+          {searchQuery.trim() && (
+            <span>
+              Matching &ldquo;<span className="text-indigo-300">{searchQuery.trim()}</span>&rdquo;
+            </span>
           )}
         </div>
+
+        {/* Posts List */}
+        {loadingPosts && posts.length === 0 ? (
+          <div className="space-y-4">
+            {[1, 2].map((n) => (
+              <div
+                key={n}
+                className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4 animate-pulse"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-slate-800" />
+                  <div className="space-y-2 flex-1">
+                    <div className="h-3.5 w-32 bg-slate-800 rounded" />
+                    <div className="h-2.5 w-20 bg-slate-800 rounded" />
+                  </div>
+                </div>
+                <div className="h-12 bg-slate-800/70 rounded-xl" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {visiblePosts.map((post) => {
+              const isDrawerOpen = Boolean(openCommentsMap[post.id]);
+              const replies = post.commentsList || [];
+              const commentErr = commentErrorMap[post.id];
+              const badgeClass =
+                TAG_STYLES[post.tag] ||
+                'bg-indigo-500/20 text-indigo-300 border-indigo-400/30';
+
+              return (
+                <article
+                  key={post.id}
+                  className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 shadow-xl space-y-4 transition hover:border-white/20"
+                >
+                  <div className="flex justify-between items-start gap-3">
+                    <div className="flex items-center space-x-3">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedStartupFilter((prev) =>
+                            prev.toLowerCase() === (post.teamName || '').toLowerCase()
+                              ? 'All'
+                              : post.teamName
+                          )
+                        }
+                        title={`Filter updates by ${post.teamName}`}
+                        className="w-10 h-10 rounded-xl bg-slate-800 hover:bg-slate-700 border border-white/10 flex items-center justify-center text-xl shrink-0 transition"
+                      >
+                        {post.teamLogo}
+                      </button>
+                      <div>
+                        <div className="flex items-center flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedStartupFilter((prev) =>
+                                prev.toLowerCase() === (post.teamName || '').toLowerCase()
+                                  ? 'All'
+                                  : post.teamName
+                              )
+                            }
+                            className="font-bold text-sm text-white hover:text-indigo-300 transition text-left"
+                          >
+                            {post.teamName}
+                          </button>
+                          {post.verified && (
+                            <span className="text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2 py-0.5 rounded-full">
+                              Verified
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">{post.timeAgo}</p>
+                      </div>
+                    </div>
+
+                    <span
+                      className={`text-xs font-semibold border px-3 py-1 rounded-full shrink-0 ${badgeClass}`}
+                    >
+                      {post.tag}
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-line">
+                    {post.content}
+                  </p>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-white/10">
+                    <div className="flex items-center space-x-6">
+                      <button
+                        type="button"
+                        onClick={() => handleLike(post)}
+                        className={`flex items-center space-x-2 text-xs font-medium transition ${
+                          post.isLiked
+                            ? 'text-rose-400 font-bold'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <span className="text-base">{post.isLiked ? '❤️' : '🤍'}</span>
+                        <span>{post.likes} Likes</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => toggleCommentsDrawer(post.id)}
+                        className={`flex items-center space-x-2 text-xs font-medium transition ${
+                          isDrawerOpen
+                            ? 'text-indigo-300 font-bold'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <span className="text-base">💬</span>
+                        <span>{post.comments} Comments</span>
+                      </button>
+                    </div>
+
+                    <Link
+                      to="/discover"
+                      className="text-[11px] font-semibold text-slate-400 hover:text-indigo-300 transition"
+                    >
+                      View Startup 
+                    </Link>
+                  </div>
+
+                  {/* Expandable Comments Drawer */}
+                  {isDrawerOpen && (
+                    <div className="pt-3 border-t border-white/10 space-y-3">
+                      {replies.length > 0 ? (
+                        <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                          {replies.map((reply, idx) => (
+                            <div
+                              key={reply._id || idx}
+                              className="bg-slate-950/60 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs space-y-1"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="font-semibold text-white truncate">
+                                    {reply.authorName || 'Member'}
+                                  </span>
+                                  {reply.authorRole && (
+                                    <span className="text-[10px] font-semibold bg-purple-500/15 text-purple-300 border border-purple-400/25 px-2 py-0.5 rounded-full shrink-0">
+                                      {reply.authorRole}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[11px] text-slate-500 shrink-0">
+                                  {formatTimeAgo(reply.createdAt)}
+                                </span>
+                              </div>
+                              <p className="text-slate-300 leading-relaxed">{reply.text}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">
+                          No replies yet. Start the discussion below.
+                        </p>
+                      )}
+
+                      {commentErr && (
+                        <p className="text-xs text-rose-300 bg-rose-500/15 border border-rose-500/30 rounded-xl px-3 py-2">
+                          {commentErr}
+                        </p>
+                      )}
+
+                      {activeUser ? (
+                        <form
+                          onSubmit={(e) => handleAddComment(e, post)}
+                          className="flex flex-col sm:flex-row gap-2"
+                        >
+                          <span className="sm:w-48 bg-slate-950/60 border border-white/10 rounded-xl px-3 py-2 text-xs text-indigo-200 font-semibold flex items-center justify-between gap-2 truncate">
+                            <span className="truncate">{actorDisplayName || 'Member'}</span>
+                            <span className="text-[10px] text-purple-300 shrink-0">
+                              {actorRoleLabel}
+                            </span>
+                          </span>
+                          <input
+                            type="text"
+                            placeholder="Write a reply or question..."
+                            value={commentDrafts[post.id] || ''}
+                            onChange={(e) =>
+                              setCommentDrafts((prev) => ({
+                                ...prev,
+                                [post.id]: e.target.value,
+                              }))
+                            }
+                            className="flex-1 bg-slate-950/70 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                          />
+                          <button
+                            type="submit"
+                            disabled={commentSubmittingId === post.id}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold rounded-xl text-xs transition border border-indigo-400/30"
+                          >
+                            {commentSubmittingId === post.id ? 'Sending...' : 'Reply'}
+                          </button>
+                        </form>
+                      ) : (
+                        <div className="flex items-center justify-between gap-3 bg-slate-950/60 border border-white/10 rounded-xl px-4 py-2.5 text-xs">
+                          <span className="text-slate-400">
+                            Log in as a startup, investor, or company to post replies.
+                          </span>
+                          <Link
+                            to="/login"
+                            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition border border-indigo-400/30 shrink-0"
+                          >
+                            Log In
+                          </Link>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+
+            {visiblePosts.length === 0 && (
+              <div className="text-center py-12 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl space-y-3 px-4">
+                <p className="text-slate-300 font-semibold text-sm">
+                  No updates match your search or filters.
+                </p>
+                <p className="text-slate-400 text-xs">
+                  Try searching for another startup name or reset your active filters.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleResetFilters}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl border border-indigo-400/30 transition"
+                >
+                  Reset Filters
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Floating Action Button */}
-      <div className="fixed bottom-8 right-8 z-40 group flex items-center">
-        <span className="absolute right-16 bg-slate-900/90 text-indigo-200 text-xs font-bold px-3 py-1.5 rounded-xl border border-white/10 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all duration-300 pointer-events-none shadow-xl whitespace-nowrap">
-          {activeUser ? 'Post an update' : 'Log in to post'}
-        </span>
+      {/* Floating Action Button (Visible to Guests & Startup Accounts) */}
+      {!isInvestorOrCompany && (
+        <div className="fixed bottom-8 right-8 z-40 group flex items-center">
+          <span className="absolute right-16 bg-slate-900/90 text-indigo-200 text-xs font-bold px-3 py-1.5 rounded-xl border border-white/10 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all duration-300 pointer-events-none shadow-xl whitespace-nowrap">
+            {activeUser ? 'Post an update' : 'Log in to post'}
+          </span>
 
-        <button
-          type="button"
-          onClick={handleOpenPostModal}
-          className="w-14 h-14 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full flex items-center justify-center text-2xl font-bold shadow-2xl shadow-indigo-900/80 border border-indigo-400/40 transition-transform hover:scale-105 active:scale-95"
-          aria-label="Post an update"
-        >
-          +
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => handleOpenPostModal('Milestone')}
+            className="w-14 h-14 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full flex items-center justify-center text-2xl font-bold shadow-2xl shadow-indigo-900/80 border border-indigo-400/40 transition-transform hover:scale-105 active:scale-95"
+            aria-label="Post an update"
+          >
+            +
+          </button>
+        </div>
+      )}
 
-      {/* Create Post Modal (Locked to Logged-In Startup Name) */}
-      {isModalOpen && activeUser && (
+      {/* Create Post Modal (Startup Accounts Only) */}
+      {isModalOpen && canCreatePost && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-slate-950/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-5 relative">
             <div className="flex justify-between items-center border-b border-white/10 pb-4">
@@ -637,7 +989,9 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
                   <h3 className="text-base font-bold text-white">Create Post</h3>
                   <p className="text-xs text-slate-400">
                     Posting as{' '}
-                    <span className="text-indigo-300 font-semibold">{displayStartupName}</span>
+                    <span className="text-indigo-300 font-semibold">
+                      {actorDisplayName || 'Startup'}
+                    </span>
                   </p>
                 </div>
               </div>
@@ -663,7 +1017,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
                   Startup Name (Fixed)
                 </label>
                 <div className="w-full bg-slate-950/80 border border-white/10 rounded-xl px-3.5 py-2 text-xs font-semibold text-indigo-200">
-                  {displayStartupName}
+                  {actorDisplayName || 'Startup'}
                 </div>
               </div>
 

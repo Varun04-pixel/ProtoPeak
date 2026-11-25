@@ -4,17 +4,23 @@ import { Link } from 'react-router-dom';
 export default function Navbar({ user, onLogout }) {
   const [isOpen, setIsOpen] = useState(false);
 
-  const startupDisplayName = (
-    user?.startupName ||
-    user?.name ||
-    'Startup'
+  const displayLabel = (
+    user?.role === 'startup'
+      ? user?.startupName || user?.name
+      : user?.name || user?.startupName || 'Account'
   ).trim();
+
+  const roleTag =
+    user?.role === 'investor'
+      ? 'Investor'
+      : user?.role === 'company'
+      ? 'Company'
+      : '';
 
   return (
     <nav className="fixed top-0 left-0 w-full z-50 bg-slate-900/60 backdrop-blur-xs border-b border-white/10 shadow-lg transition-all duration-300">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
-
           {/* Logo & Brand */}
           <div className="flex items-center">
             <Link to="/" className="flex items-center space-x-2">
@@ -43,8 +49,13 @@ export default function Navbar({ user, onLogout }) {
               <div className="flex items-center gap-3">
                 <div className="hidden sm:flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-1.5 rounded-xl text-xs">
                   <span className="text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-400/30 px-2.5 py-0.5 rounded-full">
-                    {startupDisplayName}
+                    {displayLabel}
                   </span>
+                  {roleTag && (
+                    <span className="text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-400/30 px-2 py-0.5 rounded-full">
+                      {roleTag}
+                    </span>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -87,11 +98,10 @@ export default function Navbar({ user, onLogout }) {
               </svg>
             </button>
           </div>
-
         </div>
       </div>
 
-      {/* Mobile Menu Dropdown with Glassmorphism */}
+      {/* Mobile Menu Dropdown */}
       {isOpen && (
         <div className="md:hidden bg-slate-900/90 backdrop-blur-lg border-b border-white/10 px-4 pt-2 pb-4 space-y-3">
           <Link to="/" className="block text-slate-300 hover:text-white font-medium py-1">
@@ -111,9 +121,9 @@ export default function Navbar({ user, onLogout }) {
             {user ? (
               <>
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-sm text-slate-400">Startup:</span>
+                  <span className="text-sm text-slate-400">{roleTag || 'Startup'}:</span>
                   <span className="text-xs px-2.5 py-0.5 rounded-md font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
-                    {startupDisplayName}
+                    {displayLabel}
                   </span>
                 </div>
                 <button

@@ -9,7 +9,10 @@ export default function CreateStartupModal({
   onCreate,
   currentUser = null,
 }) {
-  const defaultName = currentUser?.startupName || '';
+  const role = String(currentUser?.role || 'startup').trim().toLowerCase();
+  const isRestrictedRole = role === 'investor' || role === 'company';
+
+  const defaultName = !isRestrictedRole ? currentUser?.startupName || '' : '';
   const defaultLocation = currentUser?.institution || 'Bengaluru, India';
 
   const [name, setName] = useState(defaultName);
@@ -26,7 +29,7 @@ export default function CreateStartupModal({
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !isRestrictedRole) {
       const accountStartup = currentUser?.startupName || '';
       const accountInstitution = currentUser?.institution || 'Bengaluru, India';
       setName(accountStartup);
@@ -38,9 +41,9 @@ export default function CreateStartupModal({
       );
       setError('');
     }
-  }, [isOpen, currentUser]);
+  }, [isOpen, currentUser, isRestrictedRole]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !currentUser || isRestrictedRole) return null;
 
   const submitHandler = onCreateStartup || onCreate;
 

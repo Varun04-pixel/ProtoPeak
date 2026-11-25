@@ -2,37 +2,81 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
-import { requireAuth } from '../middleware/authMiddleware.js';
-
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'protopeak_dev_secret_key';
+const JWT_SECRET = process.env.JWT_SECRET || 'protopeak_dev_secret_change_in_prod';
+const ALLOWED_ROLES = new Set(['startup', 'investor', 'company']);
+
 function escapeRegex(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// GET /api/auth/me — Return the authenticated user's current profile including startupName
-router.get('/me', requireAuth, async (req, res) => {
-  const resolvedStartupName = (req.user.startupName || req.user.name || '').trim();
-  res.status(200).json({
-    user: {
-      id: req.user._id,
-      startupName: resolvedStartupName,
-      email: req.user.email,
-      institution: req.user.institution || req.user.organization || '',
-      role: req.user.role,
-    },
-  });
-});
+function normalizeRole(role) {
+  const clean = String(role || 'startup').trim().toLowerCase();
+  return ALLOWED_ROLES.has(clean) ? clean : 'startup';
+}
 
-// POST /api/auth/register — Register a new startup account with a unique startupName
+function serializeUser(user) {
+  const role = normalizeRole(user.role);
+  const cleanName = (user.startupName || user.name || '').trim();
+  return {
+    id: user._id,
+    name: cleanName,
+    startupName: role === 'startup' ? cleanName : (user.startupName || '').trim(),
+    email: user.email,
+    institution: user.institution || user.organization || '',
+    organization: user.organization || user.institution || '',
+    role,
+  };
+}
+
+export async function requireAuth(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+
+    if (!token) {
+      return res.status(401).json({ message: 'Authentication token is required.' });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.id);
+    if (!user) {
+      return res.status(401).json({ message: 'Account not found.' });
+    }
+
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(401).json({ message: 'Invalid or expired token.' });
+  }
+}
+
+// POST /api/auth/register — Register a Startup (org), Investor (individual), or Company (org)
 router.post('/register', async (req, res) => {
   try {
-    const { startupName, email, password, institution, role } = req.body;
+    const {
+      startupName,
+      name,
+      email,
+      password,
+      institution,
+      organization,
+      role,
+    } = req.body;
 
-    if (!startupName || !email || !password || !institution) {
+    const resolvedRole = normalizeRole(role);
+    const displayName = (startupName || name || '').trim();
+    const orgOrInstitution = (institution || organization || '').trim();
+
+    if (!displayName || !email || !password || !orgOrInstitution) {
       return res.status(400).json({
-        message: 'Startup name, email, password, and institution are required.',
+        message:
+          resolvedRole === 'startup'
+            ? 'Startup name, email, password, and institution are required.'
+            : 'Name, email, password, and organization/institution are required.',
       });
     }
 
@@ -42,11 +86,8 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    const cleanStartupName = startupName.trim();
-    const normalizedEmail = email.toLowerCase().trim();
-    const cleanInstitution = institution.trim();
+    const normalizedEmail = String(email).toLowerCase().trim();
 
-    // Reject duplicate email
     const existingEmail = await User.findOne({ email: normalizedEmail });
     if (existingEmail) {
       return res.status(409).json({
@@ -54,113 +95,125 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // Reject duplicate startupName (case-insensitive)
-    const existingStartup = await User.findOne({
-      startupName: new RegExp(`^${escapeRegex(cleanStartupName)}$`, 'i'),
-    });
-    if (existingStartup) {
-      return res.status(409).json({
-        message: `"${cleanStartupName}" is already registered. Each startup name must be unique.`,
+    if (resolvedRole === 'startup') {
+      const existingStartup = await User.findOne({
+        role: 'startup',
+        startupName: new RegExp(`^${escapeRegex(displayName)}$`, 'i'),
       });
+      if (existingStartup) {
+        return res.status(409).json({
+          message: `"${displayName}" is already registered. Each startup name must be unique.`,
+        });
+      }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await User.create({
-      startupName: cleanStartupName,
+      name: displayName,
+      startupName: resolvedRole === 'startup' ? displayName : undefined,
       email: normalizedEmail,
       password: hashedPassword,
-      institution: cleanInstitution,
-      role: role || 'startup',
+      institution: orgOrInstitution,
+      organization: orgOrInstitution,
+      role: resolvedRole,
     });
 
+    const serialized = serializeUser(user);
+
     const token = jwt.sign(
-      { id: user._id, role: user.role, startupName: user.startupName },
+      {
+        id: user._id,
+        role: serialized.role,
+        startupName: serialized.startupName,
+        name: serialized.name,
+      },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       token,
-      user: {
-        id: user._id,
-        startupName: user.startupName,
-        email: user.email,
-        institution: user.institution,
-        role: user.role,
-      },
+      user: serialized,
     });
   } catch (err) {
     if (err.code === 11000) {
-      const field = Object.keys(err.keyPattern || {})[0];
-      if (field === 'startupName') {
-        return res.status(409).json({
-          message: 'This startup name is already taken. Please choose a unique startup name.',
-        });
-      }
       return res.status(409).json({
         message: 'An account with this email or startup name already exists.',
       });
     }
-    res.status(400).json({ message: 'Registration failed.', error: err.message });
+    return res.status(400).json({
+      message: 'Registration failed.',
+      error: err.message,
+    });
   }
 });
 
-// POST /api/auth/login — Strictly checks existing credentials (never creates or overwrites)
+// POST /api/auth/login — Authenticate existing startup, investor, or company account
 router.post('/login', async (req, res) => {
   try {
     const { startupName, email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required.' });
+      return res.status(400).json({
+        message: 'Email and password are required.',
+      });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = String(email).toLowerCase().trim();
     const user = await User.findOne({ email: normalizedEmail });
 
     if (!user) {
-      return res.status(401).json({ message: 'No account found with this email.' });
+      return res.status(401).json({
+        message: 'No account found with this email.',
+      });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
-    }
-
-    // Only reject if the user actually has a startupName stored and the entered one conflicts
-    const enteredStartup = (startupName || '').trim().toLowerCase();
-    const storedStartup = (user.startupName || '').trim().toLowerCase();
-    if (enteredStartup && storedStartup && enteredStartup !== storedStartup) {
       return res.status(401).json({
-        message: 'Startup name does not match this account.',
+        message: 'Invalid email or password.',
       });
     }
 
-    const resolvedStartupName = (user.startupName || user.name || '').trim();
+    const enteredName = (startupName || '').trim().toLowerCase();
+    const storedName = (user.startupName || user.name || '').trim().toLowerCase();
+    if (enteredName && storedName && enteredName !== storedName) {
+      return res.status(401).json({
+        message: 'Account name does not match this user.',
+      });
+    }
+
+    const serialized = serializeUser(user);
 
     const token = jwt.sign(
       {
         id: user._id,
-        role: user.role,
-        startupName: resolvedStartupName,
+        role: serialized.role,
+        startupName: serialized.startupName,
+        name: serialized.name,
       },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       token,
-      user: {
-        id: user._id,
-        startupName: resolvedStartupName,
-        email: user.email,
-        institution: user.institution || user.organization || '',
-        role: user.role,
-      },
+      user: serialized,
     });
   } catch (err) {
-    res.status(500).json({ message: 'Login failed.', error: err.message });
+    return res.status(500).json({
+      message: 'Login failed.',
+      error: err.message,
+    });
   }
+});
+
+// GET /api/auth/me — Return current authenticated user profile
+router.get('/me', requireAuth, async (req, res) => {
+  return res.status(200).json({
+    user: serializeUser(req.user),
+  });
 });
 
 export default router;
