@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { INITIAL_STARTUPS } from '../../data/startupsData';
 import { apiRequest } from '../../api/client';
@@ -24,7 +24,7 @@ const INITIAL_POSTS = [
     content:
       'Excited to announce that we completed our static analysis engine integration! QueryGuard can now parse and flag SQL injection vectors in under 120ms during automated local testing.',
     likes: 24,
-    comments: 0,
+    comments: 1,
     commentsList: [
       {
         _id: 'c1',
@@ -109,9 +109,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
   });
 
   useEffect(() => {
-    if (currentUser) {
-      setResolvedUser(currentUser);
-    }
+    setResolvedUser(currentUser);
   }, [currentUser]);
 
   useEffect(() => {
@@ -173,11 +171,31 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
   const [submitting, setSubmitting] = useState(false);
   const [postError, setPostError] = useState('');
 
+  // 5-second auth popup toast for unauthenticated actions
+  const [authToastMessage, setAuthToastMessage] = useState('');
+  const toastTimerRef = useRef(null);
+
   // Inline comment drawer state
   const [openCommentsMap, setOpenCommentsMap] = useState({});
   const [commentDrafts, setCommentDrafts] = useState({});
   const [commentErrorMap, setCommentErrorMap] = useState({});
   const [commentSubmittingId, setCommentSubmittingId] = useState(null);
+
+  const showAuthPopup = (message) => {
+    setAuthToastMessage(message);
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = setTimeout(() => {
+      setAuthToastMessage('');
+    }, 5000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -215,7 +233,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
 
   const handleLike = async (targetPost) => {
     if (!activeUser) {
-      navigate('/login');
+      showAuthPopup('Only authenticated startup accounts can like posts.');
       return;
     }
 
@@ -255,7 +273,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
   const handleAddComment = async (e, targetPost) => {
     e.preventDefault();
     if (!activeUser) {
-      navigate('/login');
+      showAuthPopup('Only authenticated startup accounts can reply to posts.');
       return;
     }
 
@@ -376,6 +394,32 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 text-white pt-24 pb-16 px-4 sm:px-6 lg:px-8 relative">
+      {/* 5-Second Auth Toast Popup */}
+      {authToastMessage && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md bg-slate-900/95 backdrop-blur-xl border border-indigo-400/40 text-white px-4 py-3 rounded-2xl shadow-2xl shadow-indigo-950/80 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs sm:text-sm font-medium text-slate-100">
+            <span className="text-base shrink-0">🔒</span>
+            <span>{authToastMessage}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/login"
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition"
+            >
+              Log In
+            </Link>
+            <button
+              type="button"
+              onClick={() => setAuthToastMessage('')}
+              className="text-slate-400 hover:text-white text-xs px-1.5 py-1"
+              aria-label="Dismiss notification"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-3xl mx-auto space-y-6">
         <div className="space-y-2">
           <h1 className="text-3xl sm:text-4xl font-black tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
@@ -565,7 +609,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
       </div>
 
       {/* Floating Action Button */}
-      <div className="fixed bottom-8 right-8 z-50 group flex items-center">
+      <div className="fixed bottom-8 right-8 z-40 group flex items-center">
         <span className="absolute right-16 bg-slate-900/90 text-indigo-200 text-xs font-bold px-3 py-1.5 rounded-xl border border-white/10 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all duration-300 pointer-events-none shadow-xl whitespace-nowrap">
           {activeUser ? 'Post an update' : 'Log in to post'}
         </span>
