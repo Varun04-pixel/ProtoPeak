@@ -96,6 +96,7 @@ function normalizePost(post) {
 
 export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = null }) {
   const navigate = useNavigate();
+  const safeStartups = Array.isArray(startups) ? startups : INITIAL_STARTUPS;
 
   const [resolvedUser, setResolvedUser] = useState(() => {
     if (currentUser) return currentUser;
@@ -144,19 +145,22 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
   }, []);
 
   const activeUser = currentUser || resolvedUser;
+  const userStartupLower = (activeUser?.startupName || '').trim().toLowerCase();
 
-  const matchedOwnedStartup = startups.find(
-    (s) =>
-      activeUser &&
-      ((s.createdBy &&
-        String(s.createdBy) === String(activeUser.id || activeUser._id)) ||
-        (activeUser.startupName &&
-          s.name.toLowerCase() === activeUser.startupName.trim().toLowerCase()))
-  );
+  const matchedOwnedStartup = safeStartups.find((s) => {
+    if (!s || !activeUser) return false;
+    const ownerId = s.createdBy?._id || s.createdBy;
+    const userId = activeUser.id || activeUser._id;
+    const matchesOwner = ownerId && userId && String(ownerId) === String(userId);
+    const startupTitle = String(s.name || s.startupName || '').trim().toLowerCase();
+    const matchesName = Boolean(userStartupLower && startupTitle === userStartupLower);
+    return matchesOwner || matchesName;
+  });
 
   const activeStartupName = (
     activeUser?.startupName ||
     matchedOwnedStartup?.name ||
+    matchedOwnedStartup?.startupName ||
     activeUser?.name ||
     ''
   ).trim();
@@ -576,7 +580,7 @@ export default function FeedPage({ startups = INITIAL_STARTUPS, currentUser = nu
         </button>
       </div>
 
-      {/* Create Post Modal */}
+      {/* Create Post Modal (Locked to Logged-In Startup Name) */}
       {isModalOpen && activeUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-slate-950/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-5 relative">
