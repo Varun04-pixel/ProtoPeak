@@ -24,7 +24,7 @@ const INITIAL_POSTS = [
     content:
       'Excited to announce that we completed our static analysis engine integration! QueryGuard can now parse and flag SQL injection vectors in under 120ms during automated local testing.',
     likes: 24,
-    comments: 1,
+    comments: 0,
     commentsList: [
       {
         _id: 'c1',
@@ -89,7 +89,7 @@ function normalizePost(post) {
     id: post._id || post.id,
     timeAgo: post.timeAgo || formatTimeAgo(post.createdAt),
     commentsList: list,
-    comments: list.length > 0 ? list.length : post.comments || 0,
+    comments: list.length,
     isLiked: Boolean(post.isLiked),
   };
 }
